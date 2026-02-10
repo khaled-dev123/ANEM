@@ -1,9 +1,1 @@
-pandas
-numpy
-scikit-learn
-pymongo
-faker
-python-dateutil
-streamlit
-tqdm
-dotenv
+pandas numpy scikit-learn pymongo faker python-dateutil streamlit tqdm dotenv
