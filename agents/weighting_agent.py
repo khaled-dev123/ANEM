@@ -8,7 +8,7 @@ en se basant sur les placements réussis (duree_attente_jours faible = succès).
 from pymongo import MongoClient
 from dotenv import load_dotenv
 import os
-from scipy.stats import pearsonr  # pour corrélation (pip install scipy si besoin)
+from scipy.stats import pearsonr  
 import numpy as np
 from scoring.resource_score import CSP_CATEGORIES
 
