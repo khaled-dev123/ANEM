@@ -1,9 +1,3 @@
-#weighting_agent.py
-"""
-Agent IA 1 - Pondération Dynamique
-Dynamically selects the best strategy (S0-S3) for each CSP
-based on historical successful placements.
-"""
 
 from pymongo import MongoClient
 from dotenv import load_dotenv
