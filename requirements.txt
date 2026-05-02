@@ -1,0 +1,16 @@
+# ML Agent — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# MongoDB driver
+pymongo>=4.6.0
+
+# Environment variables (.env support)
+python-dotenv>=1.0.0
+
+# ML
+scikit-learn>=1.4.0
+numpy>=1.26.0
+pandas>=2.2.0        # used by load_real_data.py
+
+# Optional: faster progress bars during fetch
+# tqdm>=4.66.0

@@ -1,0 +1,182 @@
+{
+  "S0": {
+    "strategy": "S0",
+    "n_samples": 106,
+    "accuracy": 0.9952,
+    "feature_importances": {
+      "c1_ni_match": 0.0,
+      "c2_diplome_match": 0.375359,
+      "c3_exp_match": 0.396652,
+      "c5_anciennete": 0.064546,
+      "c6_residence": 0.004833,
+      "offre_exp_years_norm": 0.005522,
+      "dem_exp_years_norm": 0.024071,
+      "anciennete_days_norm": 0.078114,
+      "is_S0": 0.0,
+      "is_S1": 0.0,
+      "is_S2": 0.0,
+      "is_S3": 0.0,
+      "ni_sans": 0.0,
+      "ni_primaire": 0.0,
+      "ni_moyen": 0.0,
+      "ni_secondaire": 0.0,
+      "ni_universitaire": 0.0,
+      "res_meme_commune": 0.02709,
+      "res_meme_wilaya": 0.018981,
+      "res_autres": 0.004833
+    },
+    "criterion_importances": {
+      "C1": 0.0,
+      "C2": 2.5282,
+      "C3": 2.6717,
+      "C4": 1.0,
+      "C5": 0.4348,
+      "C6": 0.0325
+    },
+    "weight_overrides": {
+      "C1": 0.0217,
+      "C2": 0.3515,
+      "C3": 0.3702,
+      "C4": 0.1522,
+      "C5": 0.0784,
+      "C6": 0.026
+    },
+    "trained_at": "2026-04-09T20:52:31.786841",
+    "skipped": false
+  },
+  "S1": {
+    "strategy": "S1",
+    "n_samples": 227,
+    "accuracy": 0.9978,
+    "feature_importances": {
+      "c1_ni_match": 0.085133,
+      "c2_diplome_match": 0.353029,
+      "c3_exp_match": 0.318953,
+      "c5_anciennete": 0.044152,
+      "c6_residence": 0.006483,
+      "offre_exp_years_norm": 0.065111,
+      "dem_exp_years_norm": 0.015849,
+      "anciennete_days_norm": 0.07145,
+      "is_S0": 0.0,
+      "is_S1": 0.0,
+      "is_S2": 0.0,
+      "is_S3": 0.0,
+      "ni_sans": 0.0,
+      "ni_primaire": 0.008167,
+      "ni_moyen": 0.008167,
+      "ni_secondaire": 0.0,
+      "ni_universitaire": 0.0,
+      "res_meme_commune": 0.007185,
+      "res_meme_wilaya": 0.009837,
+      "res_autres": 0.006483
+    },
+    "criterion_importances": {
+      "C1": 0.7705,
+      "C2": 3.1952,
+      "C3": 2.8868,
+      "C4": 1.0,
+      "C5": 0.3996,
+      "C6": 0.0587
+    },
+    "weight_overrides": {
+      "C1": 0.1168,
+      "C2": 0.3965,
+      "C3": 0.3594,
+      "C4": 0.0,
+      "C5": 0.0842,
+      "C6": 0.0432
+    },
+    "trained_at": "2026-04-09T20:52:31.879640",
+    "skipped": false
+  },
+  "S2": {
+    "strategy": "S2",
+    "n_samples": 110,
+    "accuracy": 1.0,
+    "feature_importances": {
+      "c1_ni_match": 0.0,
+      "c2_diplome_match": 0.424586,
+      "c3_exp_match": 0.399398,
+      "c5_anciennete": 0.055472,
+      "c6_residence": 0.002701,
+      "offre_exp_years_norm": 0.015776,
+      "dem_exp_years_norm": 0.017419,
+      "anciennete_days_norm": 0.076783,
+      "is_S0": 0.0,
+      "is_S1": 0.0,
+      "is_S2": 0.0,
+      "is_S3": 0.0,
+      "ni_sans": 0.0,
+      "ni_primaire": 0.0,
+      "ni_moyen": 0.0,
+      "ni_secondaire": 0.0,
+      "ni_universitaire": 0.0,
+      "res_meme_commune": 0.00452,
+      "res_meme_wilaya": 0.000644,
+      "res_autres": 0.002701
+    },
+    "criterion_importances": {
+      "C1": 0.0,
+      "C2": 2.6315,
+      "C3": 2.4754,
+      "C4": 1.0,
+      "C5": 0.3438,
+      "C6": 0.0167
+    },
+    "weight_overrides": {
+      "C1": 0.0268,
+      "C2": 0.3658,
+      "C3": 0.3583,
+      "C4": 0.1473,
+      "C5": 0.0728,
+      "C6": 0.029
+    },
+    "trained_at": "2026-04-09T20:52:31.910474",
+    "skipped": false
+  },
+  "S3": {
+    "strategy": "S3",
+    "n_samples": 357,
+    "accuracy": 0.9972,
+    "feature_importances": {
+      "c1_ni_match": 0.0,
+      "c2_diplome_match": 0.365284,
+      "c3_exp_match": 0.359919,
+      "c5_anciennete": 0.110021,
+      "c6_residence": 0.010414,
+      "offre_exp_years_norm": 0.014961,
+      "dem_exp_years_norm": 0.043873,
+      "anciennete_days_norm": 0.069257,
+      "is_S0": 0.0,
+      "is_S1": 0.0,
+      "is_S2": 0.0,
+      "is_S3": 0.0,
+      "ni_sans": 0.0,
+      "ni_primaire": 0.0,
+      "ni_moyen": 0.0,
+      "ni_secondaire": 0.0,
+      "ni_universitaire": 0.0,
+      "res_meme_commune": 0.004406,
+      "res_meme_wilaya": 0.011451,
+      "res_autres": 0.010414
+    },
+    "criterion_importances": {
+      "C1": 0.0,
+      "C2": 3.2228,
+      "C3": 3.1754,
+      "C4": 1.0,
+      "C5": 0.9707,
+      "C6": 0.0919
+    },
+    "weight_overrides": {
+      "C1": 0.0352,
+      "C2": 0.3641,
+      "C3": 0.3474,
+      "C4": 0.1174,
+      "C5": 0.1143,
+      "C6": 0.0215
+    },
+    "trained_at": "2026-04-09T20:52:32.077987",
+    "skipped": false
+  }
+}
