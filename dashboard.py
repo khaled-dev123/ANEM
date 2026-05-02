@@ -321,45 +321,30 @@ with status_col2:
 st.markdown("---")
 
 # ── CV Input ──────────────────────────────────────────────────────────────────
-col_input, col_spacer = st.columns([2, 1])
+col_form, col_upload = st.columns([1.7, 1.3])
 
-with col_input:
-    st.markdown('<div class="section-header">Votre CV</div>', unsafe_allow_html=True)
+with col_form:
+    st.markdown('<div class="section-header">📝 Remplir le formulaire</div>', unsafe_allow_html=True)
+    with st.container():
+        col1, col2 = st.columns(2)
+        with col1:
+            f_name = st.text_input("Nom Complet", placeholder="Ex: Ahmed Benali")
+            f_address = st.text_input("Adresse (Commune, Wilaya)", placeholder="Ex: Kouba, Alger")
+        with col2:
+            f_date = st.date_input("Date d'inscription", value=date.today())
+            f_lang = st.text_input("Langues", placeholder="Ex: Français, Anglais, Arabe")
+        
+        f_formation = st.text_area("Formation / Diplômes", placeholder="Ex: Ingénieur d'État en Informatique - USTHB", height=100)
+        f_experience = st.text_area("Expérience Professionnelle", placeholder="Ex: Développeur chez TechAlger (2014-2019)", height=150)
 
-    input_mode  = st.radio("", ["📎 Télécharger un fichier .txt", "✏️ Coller le texte"],
-                            horizontal=True, label_visibility="collapsed")
-    resume_text = ""
-
-    if "Télécharger" in input_mode:
-        uploaded = st.file_uploader("", type=["txt"], label_visibility="collapsed")
-        if uploaded:
-            resume_text = uploaded.read().decode("utf-8", errors="replace")
-            st.success(f"✅ **{uploaded.name}** chargé ({len(resume_text)} caractères)")
-    else:
-        resume_text = st.text_area(
-            "",
-            height=280,
-            label_visibility="collapsed",
-            placeholder="""Nom: Ahmed Benali
-Adresse: 12 Rue Didouche Mourad, Kouba, Alger
-Date d inscription: 15/03/2017
-
-FORMATION
-Ingenieur d Etat en Informatique - USTHB Alger (Bac+5)
-Obtenu en 2014
-
-EXPERIENCE PROFESSIONNELLE
-Developpeur logiciel - TechAlger SARL
-2014 - 2019
-
-Responsable informatique - Sonatrach DSI
-2019 - 2024
-
-LANGUES
-Francais, Anglais, Arabe""",
-        )
-
-with col_spacer:
+with col_upload:
+    st.markdown('<div class="section-header">📎 Ou importer un fichier (.txt)</div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader("", type=["txt"], label_visibility="collapsed")
+    resume_text_uploaded = ""
+    if uploaded:
+        resume_text_uploaded = uploaded.read().decode("utf-8", errors="replace")
+        st.success(f"✅ **{uploaded.name}** chargé ({len(resume_text_uploaded)} caractères)")
+    
     st.markdown('<div class="section-header">À propos du système</div>', unsafe_allow_html=True)
     st.markdown("""
     <div class="why-box">
@@ -374,6 +359,23 @@ with col_spacer:
         C5 Ancienneté · C6 Résidence
     </div>
     """, unsafe_allow_html=True)
+
+resume_text = ""
+if uploaded:
+    resume_text = resume_text_uploaded
+elif f_name or f_address or f_formation or f_experience or f_lang:
+    resume_text = f"""Nom: {f_name}
+Adresse: {f_address}
+Date d'inscription: {f_date.strftime('%d/%m/%Y')}
+
+FORMATION
+{f_formation}
+
+EXPERIENCE PROFESSIONNELLE
+{f_experience}
+
+LANGUES
+{f_lang}"""
 
 st.markdown("")
 btn = st.button("🔍  Trouver mes 3 meilleures offres", type="primary", use_container_width=True)
