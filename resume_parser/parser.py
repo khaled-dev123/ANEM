@@ -25,6 +25,8 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 
+from .extractor import extract_text, clean_text
+
 
 # ── NI level keywords (French/Arabic transliterated) ─────────────────────────
 
@@ -220,19 +222,16 @@ def _extract_diplome(text: str) -> str:
 
 def parse_resume(path: str | Path) -> dict:
     """
-    Parse a plain-text resume file and return a structured dict.
+    Parse a resume file (PDF, DOCX, TXT) and return a structured dict.
 
     Args:
-        path: Path to the .txt resume file.
+        path: Path to the resume file.
 
     Returns:
         Dict compatible with compute_employability_score() (demandeur_* fields
         pre-filled; offre_* fields left empty for the caller to fill).
     """
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
-    # Normalise whitespace
-    text_clean = re.sub(r"\r\n", "\n", text)
-    text_clean = re.sub(r"[ \t]+", " ", text_clean)
+    text_clean = extract_text(str(path))
 
     ni             = _extract_ni(text_clean)
     diplome        = _extract_diplome(text_clean)
@@ -252,7 +251,6 @@ def parse_resume(path: str | Path) -> dict:
         "date_inscription":      date_inscr,
         # Extras
         "languages":             languages,
-        "source_file":           str(path),
         "raw_text":              text_clean,
     }
 
@@ -262,8 +260,7 @@ def parse_resume_text(text: str, source_name: str = "<inline>") -> dict:
     Same as parse_resume() but accepts raw text directly.
     Useful for tests and the ML feature extractor.
     """
-    text_clean = re.sub(r"\r\n", "\n", text)
-    text_clean = re.sub(r"[ \t]+", " ", text_clean)
+    text_clean = clean_text(text)
 
     return {
         "demandeur_ni":         _extract_ni(text_clean),
@@ -273,6 +270,5 @@ def parse_resume_text(text: str, source_name: str = "<inline>") -> dict:
         "demandeur_commune":    _extract_commune(text_clean),
         "date_inscription":     _extract_registration_date(text_clean),
         "languages":            _extract_languages(text_clean),
-        "source_file":          source_name,
         "raw_text":             text_clean,
     }

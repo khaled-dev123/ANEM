@@ -63,6 +63,29 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     transition: border-color 0.2s;
 }
 
+/* Enlarge Streamlit's native file uploader */
+[data-testid="stFileUploadDropzone"] {
+    min-height: 400px !important;
+    padding: 3rem !important;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 3px dashed #4a7fa8 !important;
+    background: rgba(15, 25, 35, 0.6) !important;
+    border-radius: 20px !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+}
+[data-testid="stFileUploadDropzone"]:hover {
+    border-color: #4fc3f7 !important;
+    background: rgba(30, 58, 95, 0.3) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.2);
+}
+[data-testid="stFileUploadDropzone"] section {
+    text-align: center !important;
+}
+
 /* ── Profile card ── */
 .profile-card {
     background: #111d2e;
@@ -205,6 +228,42 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+import tempfile
+from resume_parser.extractor import extract_text, ExtractionError, UnsupportedFileTypeError
+
+def extract_text_from_upload(uploaded_file) -> str:
+    name = uploaded_file.name
+    
+    # Save the Streamlit uploaded file to a temporary file on disk
+    suffix = Path(name).suffix.lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
+        
+    try:
+        # Pass the temporary file path to our robust extractor module
+        text = extract_text(tmp_path)
+        return text
+    except UnsupportedFileTypeError as e:
+        import streamlit as st
+        st.error(f"Type de fichier non supporté: {name}")
+        return ""
+    except ExtractionError as e:
+        import streamlit as st
+        st.error(f"Erreur d'extraction pour {name}: {e}")
+        return ""
+    except Exception as e:
+        import streamlit as st
+        st.error(f"Erreur inattendue lors de la lecture de {name}: {e}")
+        return ""
+    finally:
+        # Always clean up the temporary file
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
 def score_css(te: float) -> str:
     if te >= 75: return "score-optimale"
     if te >= 50: return "score-bonne"
@@ -321,7 +380,7 @@ with status_col2:
 st.markdown("---")
 
 # ── CV Input ──────────────────────────────────────────────────────────────────
-col_form, col_upload = st.columns([1.7, 1.3])
+col_form, col_upload = st.columns([1.3, 1.3])
 
 with col_form:
     st.markdown('<div class="section-header">📝 Remplir le formulaire</div>', unsafe_allow_html=True)
@@ -338,27 +397,45 @@ with col_form:
         f_experience = st.text_area("Expérience Professionnelle", placeholder="Ex: Développeur chez TechAlger (2014-2019)", height=150)
 
 with col_upload:
-    st.markdown('<div class="section-header">📎 Ou importer un fichier (.txt)</div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("", type=["txt"], label_visibility="collapsed")
+    st.markdown('<div class="section-header">📎 Ou importer un fichier (.txt, .pdf, .docx)</div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader("", type=["txt", "pdf", "docx"], label_visibility="collapsed")
     resume_text_uploaded = ""
     if uploaded:
-        resume_text_uploaded = uploaded.read().decode("utf-8", errors="replace")
+        resume_text_uploaded = extract_text_from_upload(uploaded)
         st.success(f"✅ **{uploaded.name}** chargé ({len(resume_text_uploaded)} caractères)")
-    
-    st.markdown('<div class="section-header">À propos du système</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="why-box">
-        <b>Comment ça marche ?</b><br><br>
-        1. Votre CV est analysé automatiquement<br>
-        2. Le modèle ML évalue votre profil sur 6 critères<br>
-        3. Chaque offre dans la base est scorée<br>
-        4. Les 3 meilleures vous sont présentées<br><br>
-        <b>Critères d'analyse :</b><br>
-        C1 Niveau d'instruction · C2 Diplômes<br>
-        C3 Expériences · C4 Langues<br>
-        C5 Ancienneté · C6 Résidence
-    </div>
-    """, unsafe_allow_html=True)
+        
+        if resume_text_uploaded:
+            st.markdown('<div class="section-header">📝 Vérifier et modifier les données extraites</div>', unsafe_allow_html=True)
+            
+            from resume_parser.parser import parse_resume_text
+            from datetime import datetime
+            parsed_data = parse_resume_text(resume_text_uploaded)
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                e_name = st.text_input("Nom Complet", value="", key="ext_name")
+                e_address = st.text_input("Adresse (Commune, Wilaya)", value=parsed_data.get("demandeur_commune", ""), key="ext_address")
+            with c2:
+                d_str = parsed_data.get("date_inscription", "")
+                try:
+                    d_val = datetime.strptime(d_str, "%Y-%m-%d").date() if d_str else date.today()
+                except Exception:
+                    d_val = date.today()
+                e_date = st.date_input("Date d'inscription", value=d_val, key="ext_date")
+                e_lang = st.text_input("Langues", value=", ".join(parsed_data.get("languages", [])), key="ext_lang")
+            
+            e_formation = st.text_area("Formation / Diplômes", value=parsed_data.get("demandeur_diplome", ""), height=80, key="ext_form")
+            
+            exp_text = ""
+            if parsed_data.get("demandeur_exp_years") or parsed_data.get("demandeur_metier"):
+                exp_text = f"{parsed_data.get('demandeur_exp_years', 0)} ans d'expérience"
+                if parsed_data.get("demandeur_metier"):
+                    exp_text += f" - {parsed_data.get('demandeur_metier')}"
+            
+            e_experience = st.text_area("Expérience Professionnelle", value=exp_text, height=80, key="ext_exp")
+            
+            # Reconstruct the string so downstream matching works on the corrected fields
+            resume_text_uploaded = f"Nom: {e_name}\nAdresse: {e_address}\nDate d'inscription: {e_date.strftime('%d/%m/%Y')}\n\nFORMATION\n{e_formation}\n\nEXPERIENCE PROFESSIONNELLE\n{e_experience}\n\nLANGUES\n{e_lang}"
 
 resume_text = ""
 if uploaded:
