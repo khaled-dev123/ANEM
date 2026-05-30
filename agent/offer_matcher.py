@@ -1,23 +1,3 @@
-"""
-agent/offer_matcher.py
-----------------------
-Searches MongoDB `placements` collection for the best job offers
-that match a parsed resume — no manual offer input needed.
-
-Matching strategy (multi-pass):
-    Pass 1 — Hard filters (NI compatibility, geography feasibility)
-    Pass 2 — Score every candidate offer with the full scoring engine
-    Pass 3 — Rank by employability score, return top-N
-
-The `placements` collection fields used:
-    offre_ni, offre_diplome, offre_exp_years, offre_metier,
-    offre_lieu, date_offre, placement_id
-
-Since placements are historical match records (not a live job board),
-we extract the unique offer "profiles" from them — distinct combinations
-of (offre_ni, offre_metier, offre_lieu, offre_exp_years) — and score
-the resume candidate against each one.
-"""
 
 from __future__ import annotations
 
@@ -25,7 +5,7 @@ import sys
 from pathlib import Path
 from datetime import date, datetime
 from collections import defaultdict
-
+from thefuzz import fuzz
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scoring.scoring_engine import (
@@ -67,13 +47,7 @@ def _compatible_ni_levels(demandeur_ni: str) -> list[str]:
 # ── Extract unique offer profiles from placements ─────────────────────────────
 
 def fetch_unique_offers(db, limit_per_ni: int = 200) -> list[dict]:
-    """
-    Pulls distinct offer profiles from the `placements` collection.
-    Groups by (offre_ni, offre_metier, offre_lieu) and picks the
-    most recent date_offre per group.
 
-    Returns a list of offer dicts with offre_* fields only.
-    """
     pipeline = [
         {
             "$group": {
@@ -107,8 +81,129 @@ def fetch_unique_offers(db, limit_per_ni: int = 200) -> list[dict]:
         })
     return offers
 
+def fetch_unique_candidates(db, limit: int = 2000) -> list[dict]:
+    pipeline = [
+        {
+            "$group": {
+                "_id": {
+                    "demandeur_ni":        "$demandeur_ni",
+                    "demandeur_diplome":   "$demandeur_diplome",
+                    "demandeur_metier":    "$demandeur_metier",
+                    "demandeur_exp_years": "$demandeur_exp_years",
+                    "demandeur_commune":   "$demandeur_commune",
+                },
+                "count":            {"$sum": 1},
+                "date_inscription": {"$max": "$date_inscription"},
+                "anciennete_days":  {"$avg": "$anciennete_days"},
+            }
+        },
+        {"$sort": {"count": -1}},
+        {"$limit": limit},
+    ]
+
+    raw = list(db["placements"].aggregate(pipeline))
+    candidates = []
+    for r in raw:
+        g = r["_id"]
+        candidates.append({
+            "demandeur_ni":        g.get("demandeur_ni", ""),
+            "demandeur_diplome":   g.get("demandeur_diplome", ""),
+            "demandeur_metier":    g.get("demandeur_metier", ""),
+            "demandeur_exp_years": int(g.get("demandeur_exp_years") or 0),
+            "demandeur_commune":   g.get("demandeur_commune", ""),
+            "date_inscription":    str(r.get("date_inscription", date.today().isoformat()))[:10],
+            "anciennete_days":     int(r.get("anciennete_days", 0)),
+            "frequency":          r["count"],
+        })
+    return candidates
 
 # ── Main matching function ────────────────────────────────────────────────────
+# Fixed _mmr_rerank — append/remove were inside the for loop
+# Also fixes te_range variable name typo (re_range → te_range)
+
+def _mmr_rerank(results: list[dict], top_n: int, lambda_: float = 0.7) -> list[dict]:
+    if top_n >= len(results):
+        return results
+
+    scores = [r["employability_score"] for r in results]
+    min_te, max_te = min(scores), max(scores)
+    te_range = max_te - min_te or 1.0
+    norm = {id(r): (r["employability_score"] - min_te) / te_range for r in results}
+
+    def _sim(a: dict, b: dict) -> float:
+        metier_sim = fuzz.token_set_ratio(
+            a["offre_metier"].lower(), b["offre_metier"].lower()
+        ) / 100.0
+        a_lieu, b_lieu = a["offre_lieu"].lower(), b["offre_lieu"].lower()
+        if a_lieu == b_lieu:
+            lieu_sim = 1.0
+        elif a_lieu[:4] == b_lieu[:4]:
+            lieu_sim = 0.5
+        else:
+            lieu_sim = 0.0
+        return 0.7 * metier_sim + 0.3 * lieu_sim
+
+    selected = []
+    remaining = list(results)
+    selected.append(remaining.pop(0))
+
+    while len(selected) < top_n and remaining:
+        best, best_mmr = None, -1.0
+        for candidate in remaining:
+            relevance  = norm[id(candidate)]
+            redundancy = max(_sim(candidate, s) for s in selected)
+            mmr = lambda_ * relevance - (1 - lambda_) * redundancy
+            if mmr > best_mmr:
+                best_mmr = mmr
+                best = candidate
+        best["mmr_score"] = round(best_mmr, 4)
+        selected.append(best)
+        remaining.remove(best)
+
+    selected[0]["mmr_score"] = round(lambda_ * norm[id(selected[0])], 4)
+    return selected
+
+
+def _mmr_rerank_candidates(results: list[dict], top_n: int, lambda_: float = 0.7) -> list[dict]:
+    """MMR reranking for candidate results — uses demandeur_metier/demandeur_commune."""
+    if top_n >= len(results):
+        return results
+
+    scores = [r["employability_score"] for r in results]
+    min_te, max_te = min(scores), max(scores)
+    te_range = max_te - min_te or 1.0
+    norm = {id(r): (r["employability_score"] - min_te) / te_range for r in results}
+
+    def _sim(a: dict, b: dict) -> float:
+        metier_sim = fuzz.token_set_ratio(
+            (a.get("demandeur_metier") or "").lower(),
+            (b.get("demandeur_metier") or "").lower(),
+        ) / 100.0
+        a_c = (a.get("demandeur_commune") or "").lower()
+        b_c = (b.get("demandeur_commune") or "").lower()
+        commune_sim = 1.0 if a_c == b_c else (0.5 if a_c[:4] == b_c[:4] else 0.0)
+        return 0.7 * metier_sim + 0.3 * commune_sim
+
+    selected = []
+    remaining = list(results)
+    selected.append(remaining.pop(0))
+
+    while len(selected) < top_n and remaining:
+        best, best_mmr = None, -1.0
+        for cand in remaining:
+            relevance  = norm[id(cand)]
+            redundancy = max(_sim(cand, s) for s in selected)
+            mmr = lambda_ * relevance - (1 - lambda_) * redundancy
+            if mmr > best_mmr:
+                best_mmr = mmr
+                best = cand
+        best["mmr_score"] = round(best_mmr, 4)
+        selected.append(best)
+        remaining.remove(best)
+
+    selected[0]["mmr_score"] = round(lambda_ * norm[id(selected[0])], 4)
+    return selected
+
 
 def find_best_offers(
     parsed_resume: dict,
@@ -116,25 +211,9 @@ def find_best_offers(
     scorer: DynamicScorer,
     top_n: int = 5,
     min_score: float = 25.0,
+    lambda_ : float = 0.7,
 ) -> list[dict]:
-    """
-    Given a parsed resume dict (from resume_parser.parser),
-    fetch all unique offers from MongoDB and return the top-N
-    best matches ranked by ML-weighted employability score.
-
-    Args:
-        parsed_resume:  Output of parse_resume() / parse_resume_text()
-        db:             pymongo Database object
-        scorer:         DynamicScorer instance (with ML overrides)
-        top_n:          How many top offers to return
-        min_score:      Minimum TE score to include in results
-
-    Returns:
-        List of dicts, each containing:
-            offer fields + scoring result + rank
-    """
     offers = fetch_unique_offers(db)
-
     if not offers:
         return []
 
@@ -146,12 +225,28 @@ def find_best_offers(
         "demandeur_metier":     parsed_resume.get("demandeur_metier", ""),
         "demandeur_commune":    parsed_resume.get("demandeur_commune", "ALGER"),
         "date_inscription":     parsed_resume.get("date_inscription",
-                                                   date.today().isoformat()),
+                                                date.today().isoformat()),
     }
+    print(f"[DEBUG] fetched {len(offers)} offers")
+    print(f"[DEBUG] candidate={candidate}")
+    for offer in offers[:3]:
+        record = {
+            **offer,
+            **candidate,
+            "offre_exp_years": int(offer.get("offre_exp_years") or 0),
+        }
+        print(f"[DEBUG] record fields: { {k:v for k,v in record.items() if v is None} }")
+        try:
+            result = scorer.score(record)
+            print(f"[DEBUG] ok te={result['employability_score']}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
 
     results = []
     for offer in offers:
-        record = {**offer, **candidate}
+        record = {**offer,**candidate,"offre_exp_years": int(offer.get("offre_exp_years") or 0)}
         try:
             result = scorer.score(record)
             te     = result["employability_score"]
@@ -178,14 +273,64 @@ def find_best_offers(
             continue
 
     # Rank by TE score descending
-    results.sort(key=lambda x: x["employability_score"], reverse=True)
-
-    # Add rank
-    for i, r in enumerate(results[:top_n], 1):
+    results.sort(key = lambda x: x["employability_score"], reverse = True)
+    selected = _mmr_rerank(results,top_n, lambda_ = lambda_)
+    for i, r in enumerate(selected,1):
         r["rank"] = i
+        r["diversity_reranked"] = True
+    
+    return selected
 
-    return results[:top_n]
+def find_best_candidates(
+    offer: dict,
+    db,
+    scorer: DynamicScorer,
+    top_n: int = 5,
+    min_score: float = 25.0,
+    lambda_: float = 0.7,
+) -> list[dict]:
+    candidates = fetch_unique_candidates(db)
 
+    if not candidates:
+        return []
+
+    results = []
+    for candidate in candidates:
+        record = {**offer, **candidate, "offre_exp_years": int(offer.get("offre_exp_years") or 0)}
+        try:
+            result = scorer.score(record)
+            te = result["employability_score"]
+            if te < min_score:
+                continue
+            results.append({
+                # Candidate info
+                "demandeur_ni":        candidate["demandeur_ni"],
+                "demandeur_diplome":   candidate["demandeur_diplome"],
+                "demandeur_metier":    candidate["demandeur_metier"],
+                "demandeur_exp_years": candidate["demandeur_exp_years"],
+                "demandeur_commune":   candidate["demandeur_commune"],
+                "date_inscription":    candidate["date_inscription"],
+                "anciennete_days":     candidate["anciennete_days"],
+                "candidate_frequency": candidate["frequency"],
+                # Score
+                "employability_score": te,
+                "classification":      result["classification"],
+                "strategy":            result["strategy"],
+                "criterion_scores":    result["criterion_scores"],
+                "weights":             result["weights"],
+                "ml_override_active":  result.get("ml_override_active", False),
+            })
+        except Exception:
+            continue
+
+    results.sort(key=lambda x: x["employability_score"], reverse=True)
+    selected = _mmr_rerank_candidates(results, top_n, lambda_)
+
+    for i, r in enumerate(selected, 1):
+        r["rank"] = i
+        r["diversity_reranked"] = True
+
+    return selected
 
 # ── Offline fallback: find best offers from local cache ───────────────────────
 
@@ -234,7 +379,7 @@ def find_best_offers_offline(
 
     results = []
     for offer in synthetic_offers:
-        record = {**offer, **candidate}
+        record = {**offer,**candidate,"offre_exp_years": int(offer.get("offre_exp_years") or 0)}
         result = scorer.score(record)
         te     = result["employability_score"]
         if te < 20:
@@ -251,6 +396,8 @@ def find_best_offers_offline(
         })
 
     results.sort(key=lambda x: x["employability_score"], reverse=True)
-    for i, r in enumerate(results[:top_n], 1):
+    selected = _mmr_rerank(results, top_n)
+    for i, r in enumerate(selected, 1):
         r["rank"] = i
-    return results[:top_n]
+        r["diversity_reranked"] = True
+    return selected

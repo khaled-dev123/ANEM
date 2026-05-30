@@ -1,37 +1,3 @@
-"""
-agent/trainer.py
-----------------
-Trains one Logistic Regression model per strategy (S0–S3) on the 37,358
-real placement records from MongoDB Atlas.
-
-Pipeline:
-    1. Fetch placements from MongoDB (batch cursor)
-    2. Generate soft negatives (shuffled / mismatched pairs) so the
-       model has negative examples to learn from
-    3. Build feature matrix via agent/features.py
-    4. Train sklearn LogisticRegression per strategy
-    5. Extract per-strategy feature importances (|coefficients|)
-    6. Write weight overrides back to MongoDB (referential collection)
-       and to a local JSON cache
-
-Weight override schema stored in MongoDB `referential`:
-    {
-        type: "ml_weight_override",
-        strategy: "S2",
-        trained_at: "2025-...",
-        n_samples: 1842,
-        accuracy: 0.87,
-        feature_importances: {
-            "c1_ni_match": 0.34,
-            ...
-        },
-        weight_overrides: {          ← normalised to sum=1, C4 zeroed for S1
-            "C1": 0.31,
-            "C2": 0.18,
-            ...
-        }
-    }
-"""
 
 from __future__ import annotations
 
@@ -85,29 +51,35 @@ CACHE_PATH  = Path(__file__).resolve().parent.parent / "ml_weight_cache.json"
 # ── Negative sample generation ────────────────────────────────────────────────
 
 def _generate_negatives(positives: list[dict], ratio: float = 1.0) -> list[dict]:
-    """
-    Create synthetic negative samples by randomly mismatching candidate
-    and offer fields from the positive pool.
-    This is necessary because the dataset only contains successful placements.
-    """
     n_neg = int(len(positives) * ratio)
     negatives = []
     indices = list(range(len(positives)))
 
-    for _ in range(n_neg):
-        # Pick two different records and swap demandeur fields
+    attempts = 0
+    while len(negatives) < n_neg and attempts < n_neg * 10:
+        attempts += 1
         i, j = random.sample(indices, 2)
         rec = copy.copy(positives[i])
         donor = positives[j]
-        # Swap demandeur fields → likely bad match
-        rec["demandeur_ni"]         = donor["demandeur_ni"]
-        rec["demandeur_diplome"]    = donor["demandeur_diplome"]
-        rec["demandeur_exp_years"]  = donor["demandeur_exp_years"]
-        rec["demandeur_metier"]     = donor["demandeur_metier"]
-        rec["demandeur_commune"]    = donor["demandeur_commune"]
-        rec["date_inscription"]     = donor.get("date_inscription", "2010-01-01")
-        rec["anciennete_days"]      = 0
-        rec["placement_success"]    = 0
+
+        # Enforce at least 2 NI tiers apart — guarantees a bad C1 score
+        ni_order = ["sans", "primaire", "moyen", "secondaire", "universitaire"]
+        from scoring.scoring_engine import _canon_ni
+        ni_i = _canon_ni(rec.get("offre_ni", ""))
+        ni_j = _canon_ni(donor.get("demandeur_ni", ""))
+        rank_i = ni_order.index(ni_i) if ni_i in ni_order else 2
+        rank_j = ni_order.index(ni_j) if ni_j in ni_order else 2
+        if abs(rank_i - rank_j) < 2:
+            continue  # too similar, skip
+
+        rec["demandeur_ni"]        = donor["demandeur_ni"]
+        rec["demandeur_diplome"]   = donor["demandeur_diplome"]
+        rec["demandeur_exp_years"] = donor["demandeur_exp_years"]
+        rec["demandeur_metier"]    = donor["demandeur_metier"]
+        rec["demandeur_commune"]   = donor["demandeur_commune"]
+        rec["date_inscription"]    = donor.get("date_inscription", "2010-01-01")
+        rec["anciennete_days"]     = 0
+        rec["placement_success"]   = 0
         negatives.append(rec)
 
     return negatives
@@ -116,10 +88,7 @@ def _generate_negatives(positives: list[dict], ratio: float = 1.0) -> list[dict]
 # ── Per-criterion importance from LR coefficients ─────────────────────────────
 
 def _coef_to_criterion_importances(coef: np.ndarray) -> dict:
-    """
-    Map LR |coefficients| to per-criterion importance scores.
-    Features that map to the same criterion are averaged.
-    """
+
     abs_coef = np.abs(coef)
     criterion_vals: dict[str, list] = {c: [] for c in ("C1","C2","C3","C4","C5","C6")}
 
@@ -128,27 +97,25 @@ def _coef_to_criterion_importances(coef: np.ndarray) -> dict:
         if crit:
             criterion_vals[crit].append(abs_coef[i])
 
-    # C4 has no direct feature (dataset has no language field) → keep as-is
-    criterion_vals["C4"] = [1.0]
+    criterion_vals["C4"] = []
 
     return {c: float(np.mean(v)) if v else 0.0 for c, v in criterion_vals.items()}
 
 
 def _importances_to_weight_overrides(
-    importances: dict, strategy: str
+    importances: dict, strategy: str, accuracy: float = 0.5
 ) -> dict:
-    """
-    Blend ML-derived importances (50%) with hand-tuned base weights (50%)
-    and normalise to sum=1. C4 is zeroed for S1 as per original config.
-    """
-    base = get_normalized_weights(strategy)  # already normalised
+    base = get_normalized_weights(strategy)
+    
+    # Scale ML trust: 0.5 accuracy → 0.0 trust, 1.0 accuracy → 1.0 trust
+    ml_trust = max(0.0, min(1.0, (accuracy - 0.5) * 2))
+
     blended = {}
-    for c in ("C1","C2","C3","C4","C5","C6"):
+    for c in ("C1", "C2", "C3", "C4", "C5", "C6"):
         ml_w   = importances.get(c, 0.0)
         base_w = base.get(c, 0.0)
-        blended[c] = 0.5 * ml_w + 0.5 * base_w
+        blended[c] = ml_trust * ml_w + (1 - ml_trust) * base_w
 
-    # S1: C4 (Languages) is irrelevant in execution strategy
     if strategy == "S1":
         blended["C4"] = 0.0
 
@@ -157,7 +124,6 @@ def _importances_to_weight_overrides(
         blended = {c: round(v / total, 4) for c, v in blended.items()}
 
     return blended
-
 
 # ── Single-strategy trainer ───────────────────────────────────────────────────
 

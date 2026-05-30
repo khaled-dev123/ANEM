@@ -27,7 +27,7 @@ Input dict expected by compute_employability_score():
     "residence_scope":   str,   # "S1"/"S2"/"S3" — optional, defaults to "S2"
 }
 """
-
+from thefuzz import fuzz
 from datetime import datetime
 from scoring.scoring_config import (
     NI_CANONICAL, M_NI,
@@ -91,12 +91,18 @@ def score_c2(offre_diplome: str, demandeur_diplome: str,
 
     if o == d:
         specialite_score = DIPLOME_MEME_SPECIALITE
-    elif _first_word(o) == _first_word(d) and _first_word(o):
-        specialite_score = DIPLOME_MEME_FILIERE
-    elif offre_ni and demandeur_ni and _canon_ni(offre_ni) == _canon_ni(demandeur_ni):
-        specialite_score = DIPLOME_MEME_DOMAINE
-    else:
+    elif len(o) < 6 or len(d) < 6:
         specialite_score = DIPLOME_AUTRES
+    else:
+        ratio = fuzz.token_set_ratio(o,d)
+        if ratio >= 90:
+            specialite_score = DIPLOME_MEME_SPECIALITE
+        elif ratio >= 70:
+            specialite_score = DIPLOME_MEME_FILIERE
+        elif ratio >= 45:
+            specialite_score = DIPLOME_MEME_DOMAINE
+        else:
+            specialite_score = DIPLOME_AUTRES
 
     return specialite_score   # M6.2 grade already captured in C1
 
@@ -105,15 +111,6 @@ def score_c2(offre_diplome: str, demandeur_diplome: str,
 
 def score_c3(offre_exp_years: int, demandeur_exp_years: int,
              offre_metier: str, demandeur_metier: str) -> float:
-    """
-    SP(Expérience) = M5.1[years_band] × M5.2[métier_proximity]
-
-    Métier proximity heuristic:
-      meme_emploi  → exact job title match
-      meme_metier  → first word of job title matches
-      meme_domaine → NI-level domain match (handled upstream)
-      autre        → fallback
-    """
     # M5.1 — years match
     req_band   = years_to_band(int(offre_exp_years)   if offre_exp_years   is not None else 0)
     found_band = years_to_band(int(demandeur_exp_years) if demandeur_exp_years is not None else 0)
@@ -125,14 +122,20 @@ def score_c3(offre_exp_years: int, demandeur_exp_years: int,
 
     if o_m == d_m:
         proximity = "meme_emploi"
-    elif _first_word(o_m) == _first_word(d_m) and _first_word(o_m):
-        proximity = "meme_metier"
-    else:
+    elif len(o_m) < 6 or len(d_m) < 6:
         proximity = "autre"
+    else:
+        ratio = fuzz.token_set_ratio(o_m,d_m)
+        if ratio >= 85:
+            proximity = "meme_emploi"
+        elif ratio >= 60:
+            proximity = "meme_metier"
+        else:
+            proximity = "autre"
 
-    metier_score = M_EXP_METIER[proximity]
-
-    return years_score * metier_score   # ∈ [0, 1]
+    # SP(Expérience) = M5.1[years_band] × M5.2[métier_proximity]
+    metier_score = M_EXP_METIER.get(proximity, 0.20)
+    return round(years_score * metier_score, 4)
 
 
 # ── C4: Langues ───────────────────────────────────────────────────────────────

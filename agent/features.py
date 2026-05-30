@@ -70,17 +70,15 @@ def _ni_onehot(ni_raw: str) -> list:
 def _strat_onehot(strat: str) -> list:
     return [int(strat == s) for s in _STRAT_ORDER]
 
-
-def _residence_proximity(offre_lieu: str, demandeur_commune: str) -> tuple:
+def _residence_proximity(offre_lieu: str, demandeur_commune: str) -> str:
     lieu    = str(offre_lieu).strip().upper()
     commune = str(demandeur_commune).strip().upper()
     if lieu == commune:
-        prox = "meme_commune"
-    elif commune in WILAYA_ALGER_COMMUNES:
-        prox = "meme_wilaya"
+        return "meme_commune"
+    elif lieu in WILAYA_ALGER_COMMUNES and commune in WILAYA_ALGER_COMMUNES:
+        return "meme_wilaya"
     else:
-        prox = "autres"
-    return prox
+        return "autres"
 
 
 def record_to_features(record: dict) -> np.ndarray:

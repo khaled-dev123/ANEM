@@ -1,8 +1,9 @@
 """
 dashboard.py — ANEM Intelligent Job Recommender
 ------------------------------------------------
-Candidate uploads their CV → system automatically finds their top 3 best offers.
-No manual configuration. No offer selection. Fully automatic.
+Two modes:
+  👤 Candidat  — upload CV or fill form → top-N best matching offers (MMR reranked)
+  🏢 Employeur — fill offer form → top-N best matching candidate profiles
 
 Run:
     streamlit run dashboard.py
@@ -11,8 +12,9 @@ Run:
 import json
 import sys
 import os
+import tempfile
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 
 import streamlit as st
 
@@ -21,271 +23,246 @@ sys.path.insert(0, str(ROOT))
 
 from resume_parser.parser   import parse_resume_text
 from agent.dynamic_scorer   import DynamicScorer
-from agent.offer_matcher    import find_best_offers, find_best_offers_offline
+from agent.offer_matcher    import find_best_offers, find_best_offers_offline, find_best_candidates
 from agent.trainer          import CACHE_PATH
 from scoring.scoring_config import get_normalized_weights
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="ANEM — Recommandation d'emploi",
+    page_title="ANEM — Recommandation Intelligente",
     page_icon="🎯",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap');
 
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.block-container { padding: 1.5rem 2.5rem 3rem 2.5rem; max-width: 1200px; margin: auto; }
 
-.block-container { padding: 2rem 3rem 3rem 3rem; max-width: 1100px; margin: auto; }
-
-/* ── Hero ── */
+/* HERO */
 .hero {
-    background: linear-gradient(135deg, #0d1b2a 0%, #1a2f4a 50%, #0d1b2a 100%);
+    background: linear-gradient(135deg, #080e1c 0%, #0c1a30 55%, #080e1c 100%);
     border-radius: 20px;
-    padding: 2.5rem 3rem;
-    margin-bottom: 2rem;
-    border: 1px solid #1e3a5f;
-    text-align: center;
+    padding: 2rem 2.8rem;
+    margin-bottom: 1.5rem;
+    border: 1px solid #162a45;
+    position: relative; overflow: hidden;
 }
-.hero h1 { font-size: 2.2rem; font-weight: 800; color: #fff; margin: 0 0 0.4rem 0; }
-.hero p  { color: #8aa8c8; font-size: 1.05rem; margin: 0; }
-
-/* ── Upload zone ── */
-.upload-zone {
-    background: #0f1923;
-    border: 2px dashed #1e3a5f;
-    border-radius: 16px;
-    padding: 2rem;
-    text-align: center;
-    transition: border-color 0.2s;
+.hero::after {
+    content: '';
+    position: absolute; top: -60px; right: -60px;
+    width: 260px; height: 260px;
+    background: radial-gradient(circle, #1a4d8822 0%, transparent 65%);
+    border-radius: 50%; pointer-events: none;
 }
+.hero h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.9rem; font-weight: 800;
+    color: #e8f0fc; margin: 0 0 0.25rem 0;
+    letter-spacing: -0.025em;
+}
+.hero p { color: #6888a8; font-size: 0.9rem; margin: 0; }
 
-/* Enlarge Streamlit's native file uploader */
+/* FILE UPLOADER */
 [data-testid="stFileUploadDropzone"] {
-    min-height: 400px !important;
-    padding: 3rem !important;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    border: 3px dashed #4a7fa8 !important;
-    background: rgba(15, 25, 35, 0.6) !important;
-    border-radius: 20px !important;
-    transition: all 0.3s ease !important;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+    min-height: 120px !important;
+    border: 2px dashed #1c3554 !important;
+    background: rgba(8,14,28,0.6) !important;
+    border-radius: 12px !important;
 }
 [data-testid="stFileUploadDropzone"]:hover {
-    border-color: #4fc3f7 !important;
-    background: rgba(30, 58, 95, 0.3) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 12px 32px rgba(0,0,0,0.2);
-}
-[data-testid="stFileUploadDropzone"] section {
-    text-align: center !important;
+    border-color: #3070b8 !important;
+    background: rgba(16,32,58,0.5) !important;
 }
 
-/* ── Profile card ── */
+/* PROFILE CARD */
 .profile-card {
-    background: #111d2e;
-    border-radius: 14px;
-    padding: 1.4rem 1.8rem;
-    border: 1px solid #1e3a5f;
-    margin-bottom: 1.5rem;
+    background: #0c1828;
+    border-radius: 12px;
+    padding: 1.1rem 1.5rem;
+    border: 1px solid #162a45;
+    margin-bottom: 1rem;
 }
-.profile-card h3 { color: #e2eaf4; margin: 0 0 1rem 0; font-size: 1rem; font-weight: 700;
-                   text-transform: uppercase; letter-spacing: 0.08em; }
+.profile-card h3 {
+    font-family: 'Syne', sans-serif;
+    color: #a8c4e0; margin: 0 0 0.7rem 0;
+    font-size: 0.72rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.12em;
+}
 .profile-tag {
     display: inline-block;
-    background: #1a2f4a;
-    color: #8aa8c8;
-    border-radius: 8px;
-    padding: 4px 12px;
-    font-size: 0.82rem;
-    margin: 3px;
+    background: #111e30; color: #6888a8;
+    border-radius: 6px; padding: 3px 9px;
+    font-size: 0.78rem; margin: 2px 2px;
 }
-.profile-tag b { color: #e2eaf4; }
+.profile-tag b { color: #c8dcf4; }
 
-/* ── Offer cards ── */
-.offer-wrapper { margin-bottom: 1.2rem; }
-
-.offer-card {
-    background: #111d2e;
-    border-radius: 16px;
-    padding: 1.6rem 2rem;
-    border: 1px solid #1e3a5f;
-    position: relative;
-    overflow: hidden;
-    transition: transform 0.15s;
-}
-.offer-card:hover { transform: translateY(-2px); }
-
-.offer-card-gold   { border-left: 5px solid #f5c542; }
-.offer-card-silver { border-left: 5px solid #a8b8c8; }
-.offer-card-bronze { border-left: 5px solid #c87533; }
-
-.rank-medal {
-    position: absolute;
-    top: 1.4rem; right: 1.8rem;
-    font-size: 2.2rem;
-    opacity: 0.9;
+/* SECTION HEADERS */
+.shdr {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.68rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.14em;
+    color: #3070b8; margin: 1.4rem 0 0.6rem 0;
 }
 
-.offer-title { font-size: 1.25rem; font-weight: 700; color: #e2eaf4; margin: 0 0 0.3rem 0; }
-.offer-sub   { color: #8aa8c8; font-size: 0.88rem; margin-bottom: 1rem; }
-
-.score-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
-.score-num {
-    font-size: 2.6rem;
-    font-weight: 800;
-    line-height: 1;
+/* MATCH CARDS */
+.mcard {
+    background: #0c1828;
+    border-radius: 14px;
+    padding: 1.4rem 1.7rem;
+    border: 1px solid #162a45;
+    position: relative; overflow: hidden;
+    margin-bottom: 0.9rem;
+    transition: transform 0.12s ease, border-color 0.12s ease;
 }
-.score-optimale { color: #00d4aa; }
-.score-bonne    { color: #4fc3f7; }
-.score-faible   { color: #ffa726; }
-.score-nulle    { color: #ef5350; }
+.mcard:hover { transform: translateY(-2px); border-color: #214468; }
+.mcard-1 { border-left: 4px solid #f5c542; }
+.mcard-2 { border-left: 4px solid #9ab8cc; }
+.mcard-3 { border-left: 4px solid #b87440; }
+.mcard-4 { border-left: 4px solid #5880a0; }
+.mcard-5 { border-left: 4px solid #3a6080; }
+.mcard-n { border-left: 4px solid #2a4060; }
 
-.score-label {
-    font-size: 0.75rem;
-    color: #8aa8c8;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+.rnk {
+    position: absolute; top: 1.1rem; right: 1.4rem;
+    font-size: 1.7rem; opacity: 0.88; line-height: 1;
 }
-.classif-badge {
-    padding: 4px 14px;
-    border-radius: 20px;
-    font-size: 0.82rem;
-    font-weight: 700;
+.ctitle {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.1rem; font-weight: 700;
+    color: #dce8f8; margin: 0 0 0.2rem 0;
+    padding-right: 3rem;
 }
-.classif-Optimale { background: #00d4aa22; color: #00d4aa; }
-.classif-Bonne    { background: #4fc3f722; color: #4fc3f7; }
-.classif-Faible   { background: #ffa72622; color: #ffa726; }
-.classif-Nulle    { background: #ef535022; color: #ef5350; }
+.csub { color: #6888a8; font-size: 0.8rem; margin-bottom: 0.8rem; }
 
-.offer-meta {
-    display: flex; flex-wrap: wrap; gap: 10px;
-    font-size: 0.82rem; color: #8aa8c8;
-    border-top: 1px solid #1e3a5f;
-    padding-top: 0.9rem; margin-top: 0.4rem;
+.srow { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 0.7rem; flex-wrap: wrap; }
+.snum {
+    font-family: 'Syne', sans-serif;
+    font-size: 2.2rem; font-weight: 800; line-height: 1;
 }
-.offer-meta span { display: flex; align-items: center; gap: 5px; }
-.offer-meta b    { color: #c8daf0; }
+.s-opt { color: #00cc9e; }
+.s-bon { color: #38b2f0; }
+.s-fai { color: #f0962a; }
+.s-nul { color: #e84040; }
 
-/* ── Progress bar for criteria ── */
-.crit-row { margin-bottom: 0.55rem; }
-.crit-label {
+.cbadge { padding: 3px 11px; border-radius: 16px; font-size: 0.76rem; font-weight: 700; }
+.cb-Optimale { background: #00cc9e18; color: #00cc9e; }
+.cb-Bonne    { background: #38b2f018; color: #38b2f0; }
+.cb-Faible   { background: #f0962a18; color: #f0962a; }
+.cb-Nulle    { background: #e8404018; color: #e84040; }
+
+.dpill {
+    background: #162a45; color: #4090cc;
+    border-radius: 14px; padding: 2px 9px;
+    font-size: 0.7rem; font-weight: 600; white-space: nowrap;
+}
+.mlpill {
+    background: #001a10; color: #00cc9e;
+    border-radius: 14px; padding: 2px 9px;
+    font-size: 0.7rem; font-weight: 600;
+}
+.bpill {
+    background: #1a1a2e; color: #6868a8;
+    border-radius: 14px; padding: 2px 9px;
+    font-size: 0.7rem;
+}
+
+.whybox {
+    background: #080e1c;
+    border-radius: 8px; padding: 0.7rem 1rem;
+    font-size: 0.79rem; color: #6888a8;
+    border: 1px solid #111e30; margin: 0.5rem 0;
+    line-height: 1.55;
+}
+.whybox b { color: #a8c4e0; }
+
+.cmeta {
+    display: flex; flex-wrap: wrap; gap: 7px;
+    font-size: 0.76rem; color: #6888a8;
+    border-top: 1px solid #162a45;
+    padding-top: 0.7rem; margin-top: 0.4rem;
+}
+.cmeta span b { color: #a8c4e0; }
+
+/* CRITERION BARS */
+.crrow { margin-bottom: 0.45rem; }
+.crlbl {
     display: flex; justify-content: space-between;
-    font-size: 0.78rem; color: #8aa8c8; margin-bottom: 3px;
+    font-size: 0.73rem; color: #6888a8; margin-bottom: 2px;
 }
-.crit-bar-bg {
-    background: #1a2f4a; border-radius: 4px; height: 7px; overflow: hidden;
-}
-.crit-bar-fill { height: 100%; border-radius: 4px; }
+.crbg { background: #111e30; border-radius: 3px; height: 5px; overflow: hidden; }
+.crfill { height: 100%; border-radius: 3px; }
 
-/* ── Match strength ring ── */
-.match-ring {
-    width: 90px; height: 90px;
-    border-radius: 50%;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    font-weight: 800;
-    flex-shrink: 0;
+/* FORM WRAPPER */
+.fwrap {
+    background: #0c1828;
+    border-radius: 12px;
+    padding: 1.3rem 1.7rem;
+    border: 1px solid #162a45;
+    margin-bottom: 0.8rem;
 }
 
-/* ── Section headers ── */
-.section-header {
-    font-size: 0.8rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: #4a7fa8;
-    margin: 1.8rem 0 0.8rem 0;
-}
-
-/* ── Why matched box ── */
-.why-box {
-    background: #0d1923;
-    border-radius: 10px;
-    padding: 1rem 1.3rem;
-    font-size: 0.83rem;
-    color: #8aa8c8;
-    border: 1px solid #1a2f4a;
-    margin-top: 0.8rem;
-}
-.why-box b { color: #c8daf0; }
-
-/* ── No results ── */
-.no-result {
-    text-align: center;
-    padding: 3rem;
-    color: #4a7fa8;
-    font-size: 1rem;
+/* NO RESULT */
+.nores {
+    text-align: center; padding: 2.5rem;
+    color: #2e5070; font-size: 0.9rem;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Utilities ─────────────────────────────────────────────────────────────────
 
-import tempfile
 from resume_parser.extractor import extract_text, ExtractionError, UnsupportedFileTypeError
 
 def extract_text_from_upload(uploaded_file) -> str:
-    name = uploaded_file.name
-    
-    # Save the Streamlit uploaded file to a temporary file on disk
-    suffix = Path(name).suffix.lower()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        tmp_path = tmp_file.name
-        
+    suffix = Path(uploaded_file.name).suffix.lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
     try:
-        # Pass the temporary file path to our robust extractor module
-        text = extract_text(tmp_path)
-        return text
-    except UnsupportedFileTypeError as e:
-        import streamlit as st
-        st.error(f"Type de fichier non supporté: {name}")
+        return extract_text(tmp_path)
+    except UnsupportedFileTypeError:
+        st.error(f"Type de fichier non supporté : {uploaded_file.name}")
         return ""
     except ExtractionError as e:
-        import streamlit as st
-        st.error(f"Erreur d'extraction pour {name}: {e}")
+        st.error(f"Erreur d'extraction : {e}")
         return ""
     except Exception as e:
-        import streamlit as st
-        st.error(f"Erreur inattendue lors de la lecture de {name}: {e}")
+        st.error(f"Erreur inattendue : {e}")
         return ""
     finally:
-        # Always clean up the temporary file
         if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+            try: os.remove(tmp_path)
+            except OSError: pass
 
-def score_css(te: float) -> str:
-    if te >= 75: return "score-optimale"
-    if te >= 50: return "score-bonne"
-    if te >= 25: return "score-faible"
-    return "score-nulle"
 
-def score_hex(te: float) -> str:
-    if te >= 75: return "#00d4aa"
-    if te >= 50: return "#4fc3f7"
-    if te >= 25: return "#ffa726"
-    return "#ef5350"
+def score_css(te):
+    if te >= 75: return "s-opt"
+    if te >= 50: return "s-bon"
+    if te >= 25: return "s-fai"
+    return "s-nul"
 
-def bar_color(score: float) -> str:
-    if score >= 0.75: return "#00d4aa"
-    if score >= 0.50: return "#4fc3f7"
-    if score >= 0.25: return "#ffa726"
-    return "#ef5350"
+def score_hex(te):
+    if te >= 75: return "#00cc9e"
+    if te >= 50: return "#38b2f0"
+    if te >= 25: return "#f0962a"
+    return "#e84040"
 
-MEDAL = ["🥇", "🥈", "🥉"]
-CARD_CSS = ["offer-card-gold", "offer-card-silver", "offer-card-bronze"]
+def bar_color(v):
+    if v >= 0.75: return "#00cc9e"
+    if v >= 0.50: return "#38b2f0"
+    if v >= 0.25: return "#f0962a"
+    return "#e84040"
 
-CRITERION_LABELS = {
+MEDALS   = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+CARD_CSS = ["mcard-1","mcard-2","mcard-3","mcard-4","mcard-5"]
+
+CRIT_LABELS = {
     "C1": "Niveau d'instruction",
     "C2": "Diplômes",
     "C3": "Expériences",
@@ -294,29 +271,118 @@ CRITERION_LABELS = {
     "C6": "Résidence",
 }
 
-def why_matched(match: dict, parsed: dict) -> str:
-    """Generate a plain-language explanation of why this offer matched."""
-    reasons = []
+NI_OPTIONS = [
+    "Sans niveau","Primaire","Moyen",
+    "Secondaire 1AS","Secondaire 2AS","Secondaire 3AS",
+    "Supérieur 1","Supérieur 2","Supérieur 3","Universitaire",
+]
+
+
+def why_offer(match, parsed):
     cs = match["criterion_scores"]
-    strat = match["strategy"]
+    bits = []
+    if cs.get("C1",0) >= 0.7:
+        bits.append(f"votre niveau (<b>{parsed['demandeur_ni']}</b>) correspond au poste")
+    if cs.get("C2",0) >= 0.9:
+        bits.append(f"votre diplôme (<b>{parsed.get('demandeur_diplome') or 'non précisé'}</b>) correspond exactement")
+    elif cs.get("C2",0) >= 0.5:
+        bits.append(f"votre diplôme (<b>{parsed.get('demandeur_diplome') or 'non précisé'}</b>) est dans un domaine proche")
+    if cs.get("C3",0) >= 0.7:
+        bits.append(f"vos <b>{parsed.get('demandeur_exp_years',0)} ans</b> d'exp. répondent aux exigences")
+    elif cs.get("C3",0) >= 0.4:
+        bits.append("votre expérience est partiellement alignée")
+    if cs.get("C5",0) >= 0.7:
+        bits.append("votre ancienneté d'inscription vous donne priorité")
+    if cs.get("C6",0) >= 0.7:
+        bits.append(f"votre commune (<b>{parsed.get('demandeur_commune','')}</b>) est proche du lieu de travail")
+    if not bits:
+        bits.append("le profil global correspond à votre dossier")
+    return "Ce poste vous correspond car " + ", et ".join(bits[:3]) + "."
 
-    if cs.get("C1", 0) >= 0.7:
-        reasons.append(f"votre niveau d'instruction (<b>{parsed['demandeur_ni']}</b>) correspond bien au poste")
-    if cs.get("C2", 0) >= 0.7:
-        reasons.append(f"votre diplôme (<b>{parsed['demandeur_diplome'] or 'non précisé'}</b>) est aligné avec le domaine requis")
-    if cs.get("C3", 0) >= 0.5:
-        reasons.append(f"vos <b>{parsed['demandeur_exp_years']} ans d'expérience</b> répondent aux exigences du poste")
-    if cs.get("C5", 0) >= 0.7:
-        reasons.append("votre ancienneté d'inscription vous donne priorité dans ce profil")
-    if cs.get("C6", 0) >= 0.7:
-        reasons.append(f"votre commune de résidence (<b>{parsed['demandeur_commune']}</b>) est proche du lieu de travail")
-    if not reasons:
-        reasons.append("le profil global du poste correspond à votre dossier")
 
-    return "Ce poste vous correspond car " + ", et ".join(reasons[:3]) + "."
+def why_candidate(match, offer):
+    cs = match["criterion_scores"]
+    bits = []
+    if cs.get("C1",0) >= 0.7:
+        bits.append(f"son niveau (<b>{match['demandeur_ni']}</b>) correspond à votre offre")
+    if cs.get("C2",0) >= 0.9:
+        bits.append(f"son diplôme (<b>{match.get('demandeur_diplome') or 'non précisé'}</b>) correspond exactement")
+    elif cs.get("C2",0) >= 0.5:
+        bits.append(f"son diplôme (<b>{match.get('demandeur_diplome') or 'non précisé'}</b>) est dans un domaine proche")
+    if cs.get("C3",0) >= 0.7:
+        bits.append(f"ses <b>{match.get('demandeur_exp_years',0)} ans</b> d'exp. répondent aux exigences")
+    elif cs.get("C3",0) >= 0.4:
+        bits.append("son expérience est partiellement alignée")
+    if cs.get("C6",0) >= 0.7:
+        bits.append(f"sa commune (<b>{match.get('demandeur_commune','')}</b>) est proche du lieu de travail")
+    if not bits:
+        bits.append("le profil global correspond à votre offre")
+    return "Ce candidat correspond car " + ", et ".join(bits[:3]) + "."
 
 
-# ── Load scorer & DB ──────────────────────────────────────────────────────────
+def render_crit_bars(cs, ws):
+    for crit, label in CRIT_LABELS.items():
+        sc  = cs.get(crit, 0)
+        w   = ws.get(crit, 0)
+        bc  = bar_color(sc)
+        pct = int(sc * 100)
+        contrib = round(sc * w * 100, 1)
+        st.markdown(f"""
+        <div class="crrow">
+          <div class="crlbl">
+            <span><b>{crit}</b> — {label}</span>
+            <span>score {sc:.2f} &nbsp;·&nbsp; poids {w:.3f} &nbsp;·&nbsp;
+              <b style="color:{bc}">{contrib:.1f} pts</b></span>
+          </div>
+          <div class="crbg"><div class="crfill" style="width:{pct}%;background:{bc}"></div></div>
+        </div>""", unsafe_allow_html=True)
+
+
+def render_card(match, idx, title, subtitle, why_html, meta_items):
+    te      = match["employability_score"]
+    classif = match["classification"]
+    strat   = match["strategy"]
+    cs      = match["criterion_scores"]
+    ws      = match["weights"]
+    medal   = MEDALS[idx] if idx < len(MEDALS) else f"#{idx+1}"
+    card_c  = CARD_CSS[min(idx, len(CARD_CSS)-1)]
+    sc_c    = score_css(te)
+    ml_pill = ('<span class="mlpill">ML actif</span>'
+               if match.get("ml_override_active")
+               else '<span class="bpill">poids de base</span>')
+    div_pill = ('<span class="dpill">🔀 diversifié</span>'
+                if match.get("diversity_reranked") else "")
+    mmr_note = (f'<span style="color:#2e5070;font-size:0.7rem">MMR {match["mmr_score"]:.3f}</span>'
+                if match.get("mmr_score") is not None else "")
+    meta_html = "".join(f'<span>{it}</span>' for it in meta_items)
+
+    st.markdown(f"""
+    <div class="mcard {card_c}">
+      <span class="rnk">{medal}</span>
+      <div class="ctitle">{title}</div>
+      <div class="csub">{subtitle}</div>
+      <div class="srow">
+        <div>
+          <div class="snum {sc_c}">{te:.1f}<span style="font-size:1rem;color:#2e5070">/100</span></div>
+          <div style="font-size:0.65rem;color:#3070b8;text-transform:uppercase;letter-spacing:0.07em">
+            Score d'employabilité</div>
+        </div>
+        <span class="cbadge cb-{classif}">{classif}</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:0.74rem;color:#3070b8">Strat. <b style="color:#6888a8">{strat}</b></span>
+          {ml_pill} {div_pill} {mmr_note}
+        </div>
+      </div>
+      <div class="whybox">{why_html}</div>
+      <div class="cmeta">{meta_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander(f"Détail des critères — #{idx+1}"):
+        render_crit_bars(cs, ws)
+
+
+# ── Resources ─────────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def load_scorer():
@@ -337,300 +403,375 @@ def get_db():
     except Exception:
         return None
 
-scorer = load_scorer()
-db     = get_db()
-
+scorer   = load_scorer()
+db       = get_db()
 cache_ok = CACHE_PATH.exists()
+cache    = {}
 if cache_ok:
     with open(CACHE_PATH) as f:
         cache = json.load(f)
-else:
-    cache = {}
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# MAIN UI
-# ════════════════════════════════════════════════════════════════════════════════
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 
-# ── Hero ──────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="hero">
-    <h1>🎯 Recommandation d'Offres d'Emploi</h1>
-    <p>Déposez votre CV — notre système analyse votre profil et vous propose les <b>3 meilleures offres</b> qui vous correspondent.</p>
-</div>
-""", unsafe_allow_html=True)
+with st.sidebar:
+    st.markdown("""
+    <div style="font-family:'Syne',sans-serif;font-size:1rem;font-weight:800;
+                color:#dce8f8;margin-bottom:1.2rem;letter-spacing:-0.01em;">
+        🎯 ANEM Recommandation
+    </div>
+    """, unsafe_allow_html=True)
 
-# ── Connection status (small, unobtrusive) ────────────────────────────────────
-status_col1, status_col2, _ = st.columns([1, 1, 4])
-with status_col1:
+    mode = st.radio("Mode", ["👤 Candidat", "🏢 Employeur"], label_visibility="collapsed")
+
+    st.markdown("---")
+    top_n     = st.slider("Recommandations", 3, 10, 5)
+    lambda_   = st.slider("Diversité (λ)", 0.0, 1.0, 0.7, 0.05,
+                           help="1.0 = tri pur par score  ·  0.0 = diversité maximale")
+    min_score = st.slider("Score minimum", 0, 60, 25)
+    st.markdown("---")
+
     if db is not None:
         try:
             n = db["placements"].estimated_document_count()
-            st.caption(f"🟢 Base de données : **{n:,}** placements")
+            st.caption(f"🟢 MongoDB · **{n:,}** placements")
         except Exception:
             st.caption("🟢 MongoDB connecté")
     else:
         st.caption("🟡 Mode démo (sans MongoDB)")
-with status_col2:
+
+    total_samples = sum(cache.get(s,{}).get("n_samples",0) for s in ["S0","S1","S2","S3"])
     if cache_ok:
-        st.caption("🟢 Modèle ML : chargé")
+        st.caption(f"🟢 Modèle ML · {total_samples:,} échantillons")
     else:
         st.caption("🔴 Modèle ML non entraîné")
 
-st.markdown("---")
 
-# ── CV Input ──────────────────────────────────────────────────────────────────
-col_form, col_upload = st.columns([1.3, 1.3])
+is_candidate = (mode == "👤 Candidat")
 
-with col_form:
-    st.markdown('<div class="section-header">📝 Remplir le formulaire</div>', unsafe_allow_html=True)
-    with st.container():
-        col1, col2 = st.columns(2)
-        with col1:
-            f_name = st.text_input("Nom Complet", placeholder="Ex: Ahmed Benali")
-            f_address = st.text_input("Adresse (Commune, Wilaya)", placeholder="Ex: Kouba, Alger")
-        with col2:
-            f_date = st.date_input("Date d'inscription", value=date.today())
-            f_lang = st.text_input("Langues", placeholder="Ex: Français, Anglais, Arabe")
-        
-        f_formation = st.text_area("Formation / Diplômes", placeholder="Ex: Ingénieur d'État en Informatique - USTHB", height=100)
-        f_experience = st.text_area("Expérience Professionnelle", placeholder="Ex: Développeur chez TechAlger (2014-2019)", height=150)
-
-with col_upload:
-    st.markdown('<div class="section-header">📎 Ou importer un fichier (.txt, .pdf, .docx)</div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("", type=["txt", "pdf", "docx"], label_visibility="collapsed")
-    resume_text_uploaded = ""
-    if uploaded:
-        resume_text_uploaded = extract_text_from_upload(uploaded)
-        st.success(f"✅ **{uploaded.name}** chargé ({len(resume_text_uploaded)} caractères)")
-        
-        if resume_text_uploaded:
-            st.markdown('<div class="section-header">📝 Vérifier et modifier les données extraites</div>', unsafe_allow_html=True)
-            
-            from resume_parser.parser import parse_resume_text
-            from datetime import datetime
-            parsed_data = parse_resume_text(resume_text_uploaded)
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                e_name = st.text_input("Nom Complet", value="", key="ext_name")
-                e_address = st.text_input("Adresse (Commune, Wilaya)", value=parsed_data.get("demandeur_commune", ""), key="ext_address")
-            with c2:
-                d_str = parsed_data.get("date_inscription", "")
-                try:
-                    d_val = datetime.strptime(d_str, "%Y-%m-%d").date() if d_str else date.today()
-                except Exception:
-                    d_val = date.today()
-                e_date = st.date_input("Date d'inscription", value=d_val, key="ext_date")
-                e_lang = st.text_input("Langues", value=", ".join(parsed_data.get("languages", [])), key="ext_lang")
-            
-            e_formation = st.text_area("Formation / Diplômes", value=parsed_data.get("demandeur_diplome", ""), height=80, key="ext_form")
-            
-            exp_text = ""
-            if parsed_data.get("demandeur_exp_years") or parsed_data.get("demandeur_metier"):
-                exp_text = f"{parsed_data.get('demandeur_exp_years', 0)} ans d'expérience"
-                if parsed_data.get("demandeur_metier"):
-                    exp_text += f" - {parsed_data.get('demandeur_metier')}"
-            
-            e_experience = st.text_area("Expérience Professionnelle", value=exp_text, height=80, key="ext_exp")
-            
-            # Reconstruct the string so downstream matching works on the corrected fields
-            resume_text_uploaded = f"Nom: {e_name}\nAdresse: {e_address}\nDate d'inscription: {e_date.strftime('%d/%m/%Y')}\n\nFORMATION\n{e_formation}\n\nEXPERIENCE PROFESSIONNELLE\n{e_experience}\n\nLANGUES\n{e_lang}"
-
-resume_text = ""
-if uploaded:
-    resume_text = resume_text_uploaded
-elif f_name or f_address or f_formation or f_experience or f_lang:
-    resume_text = f"""Nom: {f_name}
-Adresse: {f_address}
-Date d'inscription: {f_date.strftime('%d/%m/%Y')}
-
-FORMATION
-{f_formation}
-
-EXPERIENCE PROFESSIONNELLE
-{f_experience}
-
-LANGUES
-{f_lang}"""
-
-st.markdown("")
-btn = st.button("🔍  Trouver mes 3 meilleures offres", type="primary", use_container_width=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# RESULTS
+# CANDIDATE MODE
 # ════════════════════════════════════════════════════════════════════════════════
-if btn:
-    if not resume_text.strip():
-        st.error("Veuillez fournir votre CV avant de continuer.")
-        st.stop()
 
-    # ── Step 1: Parse ─────────────────────────────────────────────────────────
-    with st.spinner("Analyse du CV en cours..."):
-        parsed = parse_resume_text(resume_text, "cv_input")
+if is_candidate:
 
-    # ── Candidate profile card ────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">Profil détecté</div>', unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="profile-card">
-        <h3>Votre profil analysé</h3>
-        <span class="profile-tag">🎓 Niveau : <b>{parsed['demandeur_ni']}</b></span>
-        <span class="profile-tag">📁 Diplôme : <b>{parsed['demandeur_diplome'] or '—'}</b></span>
-        <span class="profile-tag">⏱ Expérience : <b>{parsed['demandeur_exp_years']} ans</b></span>
-        <span class="profile-tag">💼 Métier : <b>{(parsed['demandeur_metier'] or '—')[:35]}</b></span>
-        <span class="profile-tag">📍 Commune : <b>{parsed['demandeur_commune']}</b></span>
-        <span class="profile-tag">🌐 Langues : <b>{', '.join(parsed['languages']) or '—'}</b></span>
-        <span class="profile-tag">📅 Inscrit le : <b>{parsed['date_inscription']}</b></span>
+    st.markdown("""
+    <div class="hero">
+      <h1>👤 Recommandation d'Offres</h1>
+      <p>Déposez votre CV ou remplissez le formulaire — le système analyse votre profil
+      et vous propose les meilleures offres correspondantes.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Step 2: Match ─────────────────────────────────────────────────────────
-    with st.spinner("Recherche des meilleures offres dans la base de données..."):
-        if db is not None:
-            matches = find_best_offers(parsed, db, scorer, top_n=3, min_score=0)
-            source  = "MongoDB Atlas"
-        else:
-            matches = find_best_offers_offline(parsed, scorer, top_n=3)
-            source  = "mode démo"
+    # Session state init
+    for k, v in [("f_name",""),("f_address",""),("f_date",date.today()),
+                 ("f_lang",""),("f_formation",""),("f_experience",""),
+                 ("last_uploaded",None)]:
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    if not matches:
-        st.markdown("""
-        <div class="no-result">
-            😕 Aucune offre correspondante trouvée.<br>
-            <small>Essayez d'enrichir votre CV avec plus d'informations.</small>
+    col_form, col_up = st.columns([1.3, 1.0])
+
+    with col_up:
+        st.markdown('<div class="shdr">📎 Importer un fichier (.txt · .pdf · .docx)</div>',
+                    unsafe_allow_html=True)
+        uploaded = st.file_uploader("", type=["txt","pdf","docx"], label_visibility="collapsed")
+
+        if uploaded:
+            fid = f"{uploaded.name}_{uploaded.size}"
+            if st.session_state.last_uploaded != fid:
+                st.session_state.last_uploaded = fid
+                with st.spinner("Analyse du CV…"):
+                    raw = extract_text_from_upload(uploaded)
+                    if raw:
+                        pd_ = parse_resume_text(raw)
+                        st.session_state.f_address   = pd_.get("demandeur_commune","")
+                        st.session_state.f_lang      = ", ".join(pd_.get("languages",[]))
+                        st.session_state.f_formation = pd_.get("demandeur_diplome","")
+                        exp_yr = pd_.get("demandeur_exp_years", 0)
+                        metier = pd_.get("demandeur_metier","")
+                        st.session_state.f_experience = (
+                            f"{exp_yr} ans d'expérience" +
+                            (f" — {metier}" if metier else "")
+                        )
+                        try:
+                            st.session_state.f_date = datetime.strptime(
+                                pd_.get("date_inscription",""), "%Y-%m-%d").date()
+                        except Exception:
+                            st.session_state.f_date = date.today()
+            st.success(f"✅ {uploaded.name} analysé")
+        else:
+            st.session_state.last_uploaded = None
+
+    with col_form:
+        st.markdown('<div class="shdr">📝 Formulaire candidat</div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.text_input("Nom Complet",    key="f_name",    placeholder="Ahmed Benali")
+            st.text_input("Commune",         key="f_address", placeholder="Kouba")
+        with c2:
+            st.date_input("Date d'inscription", key="f_date")
+            st.text_input("Langues",         key="f_lang",    placeholder="Français, Anglais")
+        st.text_area("Formation / Diplôme",          key="f_formation",  height=90,
+                     placeholder="Ingénieur en Informatique — USTHB")
+        st.text_area("Expérience Professionnelle",   key="f_experience", height=120,
+                     placeholder="Développeur chez TechAlger (2014–2019)")
+
+    # Build resume text from form
+    resume_text = ""
+    if any([st.session_state.f_name, st.session_state.f_address,
+            st.session_state.f_formation, st.session_state.f_experience]):
+        resume_text = f"""Nom: {st.session_state.f_name}
+Adresse: {st.session_state.f_address}
+Date d'inscription: {st.session_state.f_date.strftime('%d/%m/%Y')}
+
+FORMATION
+{st.session_state.f_formation}
+
+EXPERIENCE PROFESSIONNELLE
+{st.session_state.f_experience}
+
+LANGUES
+{st.session_state.f_lang}"""
+
+    if st.button("🔍  Trouver mes meilleures offres", type="primary", use_container_width=True):
+        if not resume_text.strip():
+            st.error("Veuillez fournir votre CV avant de continuer.")
+            st.stop()
+
+        with st.spinner("Analyse du profil…"):
+            parsed = parse_resume_text(resume_text, "cv_input")
+
+        st.markdown("---")
+        st.markdown('<div class="shdr">Profil détecté</div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="profile-card">
+          <h3>Votre profil analysé</h3>
+          <span class="profile-tag">🎓 <b>{parsed['demandeur_ni']}</b></span>
+          <span class="profile-tag">📁 Diplôme : <b>{parsed['demandeur_diplome'] or '—'}</b></span>
+          <span class="profile-tag">⏱ <b>{parsed['demandeur_exp_years']} ans</b> d'exp.</span>
+          <span class="profile-tag">💼 <b>{(parsed['demandeur_metier'] or '—')[:40]}</b></span>
+          <span class="profile-tag">📍 <b>{parsed['demandeur_commune']}</b></span>
+          <span class="profile-tag">🌐 <b>{', '.join(parsed['languages']) or '—'}</b></span>
+          <span class="profile-tag">📅 Inscrit le <b>{parsed['date_inscription']}</b></span>
         </div>
         """, unsafe_allow_html=True)
+
+        with st.spinner("Recherche des meilleures offres…"):
+            if db is not None:
+                matches = find_best_offers(
+                    parsed, db, scorer,
+                    top_n=top_n, min_score=float(min_score), lambda_=lambda_,
+                )
+                source = "MongoDB Atlas"
+            else:
+                matches = find_best_offers_offline(parsed, scorer, top_n=top_n)
+                source  = "mode démo"
+
+        if not matches:
+            st.markdown('<div class="nores">😕 Aucune offre correspondante trouvée.<br>'
+                        '<small>Enrichissez votre CV avec plus d\'informations.</small></div>',
+                        unsafe_allow_html=True)
+            st.stop()
+
+        st.markdown(
+            f'<div class="shdr">Top {len(matches)} offres · {source} · λ={lambda_:.2f}</div>',
+            unsafe_allow_html=True)
+
+        for i, m in enumerate(matches):
+            render_card(
+                match    = m,
+                idx      = i,
+                title    = m["offre_metier"],
+                subtitle = (f"📍 {m['offre_lieu']} &nbsp;·&nbsp; "
+                            f"🎓 {m['offre_ni']} &nbsp;·&nbsp; "
+                            f"⏱ {m['offre_exp_years']} ans requis &nbsp;·&nbsp; "
+                            f"📁 {m['offre_diplome'] or 'Diplôme non spécifié'}"),
+                why_html = why_offer(m, parsed),
+                meta_items = [
+                    f"C1 <b>{m['criterion_scores'].get('C1',0):.2f}</b>",
+                    f"C2 <b>{m['criterion_scores'].get('C2',0):.2f}</b>",
+                    f"C3 <b>{m['criterion_scores'].get('C3',0):.2f}</b>",
+                    f"C5 <b>{m['criterion_scores'].get('C5',0):.2f}</b>",
+                    f"C6 <b>{m['criterion_scores'].get('C6',0):.2f}</b>",
+                    f"📈 {m.get('offer_frequency',0)} hist.",
+                ],
+            )
+
+        # Comparison table
+        st.markdown("---")
+        st.markdown('<div class="shdr">Comparaison</div>', unsafe_allow_html=True)
+        try:
+            import pandas as pd
+            df = pd.DataFrame({
+                "":         [f"{MEDALS[i]} #{i+1}" for i in range(len(matches))],
+                "Poste":    [m["offre_metier"][:32] for m in matches],
+                "Lieu":     [m["offre_lieu"] for m in matches],
+                "TE":       [m["employability_score"] for m in matches],
+                "Classif.": [m["classification"] for m in matches],
+                "C1": [round(m["criterion_scores"]["C1"],2) for m in matches],
+                "C2": [round(m["criterion_scores"]["C2"],2) for m in matches],
+                "C3": [round(m["criterion_scores"]["C3"],2) for m in matches],
+                "C5": [round(m["criterion_scores"]["C5"],2) for m in matches],
+                "C6": [round(m["criterion_scores"]["C6"],2) for m in matches],
+                "MMR":[round(m.get("mmr_score",0),3) for m in matches],
+            }).set_index("")
+
+            def _hl(val):
+                if isinstance(val, float) and val > 1:
+                    h = score_hex(val).lstrip("#")
+                    r,g,b = int(h[0:2],16),int(h[2:4],16),int(h[4:6],16)
+                    return f"color:rgb({r},{g},{b});font-weight:bold"
+                return ""
+
+            st.dataframe(df.style.applymap(_hl, subset=["TE"]), use_container_width=True)
+            st.download_button("⬇️ Télécharger CSV",
+                               df.to_csv().encode("utf-8"),
+                               "recommandations_offres.csv", "text/csv")
+        except ImportError:
+            for i, m in enumerate(matches):
+                st.write(f"#{i+1}: {m['offre_metier']} — {m['employability_score']:.1f}/100")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# EMPLOYER MODE
+# ════════════════════════════════════════════════════════════════════════════════
+
+else:
+
+    st.markdown("""
+    <div class="hero">
+      <h1>🏢 Recherche de Candidats</h1>
+      <p>Décrivez votre offre d'emploi — le système identifie les profils candidats
+      les plus compatibles dans la base de données.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if db is None:
+        st.warning("⚠️ MongoDB non connecté. La recherche de candidats nécessite la base de données.")
         st.stop()
 
-    # ── Step 3: Display top 3 ─────────────────────────────────────────────────
-    st.markdown(f'<div class="section-header">Top 3 offres recommandées · source : {source}</div>',
+    st.markdown('<div class="shdr">📋 Décrire votre offre d\'emploi</div>',
                 unsafe_allow_html=True)
 
-    for i, match in enumerate(matches):
-        te      = match["employability_score"]
-        classif = match["classification"]
-        strat   = match["strategy"]
-        cs      = match["criterion_scores"]
-        ws      = match["weights"]
-        color   = score_hex(te)
-        css_s   = score_css(te)
-        medal   = MEDAL[i]
-        card_c  = CARD_CSS[i]
-        reason  = why_matched(match, parsed)
+    with st.container():
+        st.markdown('<div class="fwrap">', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            offre_ni    = st.selectbox("Niveau d'instruction requis", NI_OPTIONS, index=6)
+            offre_lieu  = st.text_input("Lieu du poste (commune)", placeholder="CHERAGA")
+        with c2:
+            offre_diplome = st.text_input("Diplôme requis", placeholder="Génie informatique")
+            offre_exp     = st.number_input("Expérience requise (années)", 0, 30, 2)
+        with c3:
+            offre_metier = st.text_input("Intitulé du poste", placeholder="Développeur logiciel")
+            offre_date   = st.date_input("Date de l'offre", value=date.today())
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        # ── Card HTML ─────────────────────────────────────────────────────────
+    if st.button("🔍  Trouver les meilleurs candidats", type="primary", use_container_width=True):
+        if not offre_metier.strip():
+            st.error("Veuillez renseigner au minimum l'intitulé du poste.")
+            st.stop()
+
+        offer_dict = {
+            "offre_ni":        offre_ni,
+            "offre_diplome":   offre_diplome,
+            "offre_exp_years": int(offre_exp),
+            "offre_metier":    offre_metier,
+            "offre_lieu":      offre_lieu,
+            "date_offre":      offre_date.isoformat(),
+        }
+
+        st.markdown("---")
+        st.markdown('<div class="shdr">Offre soumise</div>', unsafe_allow_html=True)
         st.markdown(f"""
-        <div class="offer-card {card_c}">
-            <span class="rank-medal">{medal}</span>
-
-            <div class="offer-title">{match['offre_metier']}</div>
-            <div class="offer-sub">
-                📍 {match['offre_lieu']} &nbsp;·&nbsp;
-                🎓 {match['offre_ni']} &nbsp;·&nbsp;
-                ⏱ {match['offre_exp_years']} ans requis &nbsp;·&nbsp;
-                📁 {match['offre_diplome'] or 'Diplôme non spécifié'}
-            </div>
-
-            <div class="score-row">
-                <div>
-                    <div class="score-num {css_s}">{te:.1f}<span style="font-size:1.2rem;color:#4a7fa8">/100</span></div>
-                    <div class="score-label">Score d'employabilité</div>
-                </div>
-                <span class="classif-badge classif-{classif}">{classif}</span>
-                <div style="margin-left:auto;font-size:0.8rem;color:#4a7fa8">
-                    Stratégie <b style="color:#8aa8c8">{strat}</b> &nbsp;·&nbsp;
-                    {'<span style="color:#00d4aa">ML actif</span>' if match.get("ml_override_active") else '<span style="color:#4a7fa8">poids de base</span>'}
-                    &nbsp;·&nbsp; {match.get('offer_frequency', 0)} placements historiques
-                </div>
-            </div>
-
-            <div class="why-box">{reason}</div>
-
-            <div class="offer-meta">
-                <span>📊 C1 <b>{cs.get('C1',0):.2f}</b></span>
-                <span>📋 C2 <b>{cs.get('C2',0):.2f}</b></span>
-                <span>💼 C3 <b>{cs.get('C3',0):.2f}</b></span>
-                <span>🌐 C4 <b>{cs.get('C4',0):.2f}</b></span>
-                <span>📅 C5 <b>{cs.get('C5',0):.2f}</b></span>
-                <span>📍 C6 <b>{cs.get('C6',0):.2f}</b></span>
-            </div>
+        <div class="profile-card">
+          <h3>Détails de votre offre</h3>
+          <span class="profile-tag">💼 <b>{offre_metier or '—'}</b></span>
+          <span class="profile-tag">🎓 <b>{offre_ni}</b></span>
+          <span class="profile-tag">📁 <b>{offre_diplome or 'Non spécifié'}</b></span>
+          <span class="profile-tag">⏱ <b>{offre_exp} ans</b> requis</span>
+          <span class="profile-tag">📍 <b>{offre_lieu or 'Non spécifié'}</b></span>
+          <span class="profile-tag">📅 <b>{offre_date.strftime('%d/%m/%Y')}</b></span>
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Expandable criterion breakdown ────────────────────────────────────
-        with st.expander(f"Détail des critères — Offre #{i+1}"):
-            for crit, label in CRITERION_LABELS.items():
-                sc   = cs.get(crit, 0)
-                w    = ws.get(crit, 0)
-                cont = sc * w
-                bc   = bar_color(sc)
-                pct  = int(sc * 100)
-                contrib_pct = round(cont * 100, 1)
+        with st.spinner("Recherche des candidats compatibles…"):
+            matches = find_best_candidates(
+                offer_dict, db, scorer,
+                top_n=top_n, min_score=float(min_score), lambda_=lambda_,
+            )
 
-                st.markdown(f"""
-                <div class="crit-row">
-                    <div class="crit-label">
-                        <span><b>{crit}</b> — {label}</span>
-                        <span>score {sc:.2f} · poids {w:.3f} · contribution <b style="color:{bc}">{contrib_pct:.1f} pts</b></span>
-                    </div>
-                    <div class="crit-bar-bg">
-                        <div class="crit-bar-fill" style="width:{pct}%;background:{bc};"></div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+        if not matches:
+            st.markdown('<div class="nores">😕 Aucun candidat correspondant trouvé.<br>'
+                        '<small>Essayez d\'élargir les critères ou de réduire le score minimum.</small></div>',
+                        unsafe_allow_html=True)
+            st.stop()
 
-        st.markdown("")  # spacing between cards
+        st.markdown(
+            f'<div class="shdr">Top {len(matches)} candidats · λ={lambda_:.2f}</div>',
+            unsafe_allow_html=True)
 
-    # ── Summary comparison ────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown('<div class="section-header">Comparaison des 3 offres</div>', unsafe_allow_html=True)
-
-    try:
-        import pandas as pd
-
-        comp_data = {
-            "": [f"{MEDAL[i]} Offre #{i+1}" for i in range(len(matches))],
-            "Poste":      [m["offre_metier"][:30] for m in matches],
-            "Lieu":       [m["offre_lieu"] for m in matches],
-            "TE Score":   [m["employability_score"] for m in matches],
-            "Classif.":   [m["classification"] for m in matches],
-            "C1":         [round(m["criterion_scores"]["C1"], 2) for m in matches],
-            "C2":         [round(m["criterion_scores"]["C2"], 2) for m in matches],
-            "C3":         [round(m["criterion_scores"]["C3"], 2) for m in matches],
-            "C5":         [round(m["criterion_scores"]["C5"], 2) for m in matches],
-            "C6":         [round(m["criterion_scores"]["C6"], 2) for m in matches],
-        }
-        df = pd.DataFrame(comp_data).set_index("")
-
-        def hl(val):
-            if isinstance(val, float):
-                c = score_hex(val if val > 1 else val * 100).replace("#", "")
-                r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
-                return f"color:rgb({r},{g},{b});font-weight:bold"
-            return ""
-
-        st.dataframe(
-            df.style.applymap(hl, subset=["TE Score"]),
-            use_container_width=True,
-        )
-
-        csv = df.to_csv().encode("utf-8")
-        st.download_button(
-            "⬇️  Télécharger les résultats (CSV)",
-            csv, "recommandations.csv", "text/csv",
-        )
-
-    except ImportError:
         for i, m in enumerate(matches):
-            st.write(f"Offre #{i+1}: {m['offre_metier']} — {m['employability_score']:.1f}/100")
+            anc     = m.get("anciennete_days", 0)
+            anc_str = f"{anc // 365} ans" if anc >= 365 else f"{anc} jours"
+            render_card(
+                match    = m,
+                idx      = i,
+                title    = m["demandeur_metier"] or "Profil sans métier",
+                subtitle = (f"📍 {m['demandeur_commune']} &nbsp;·&nbsp; "
+                            f"🎓 {m['demandeur_ni']} &nbsp;·&nbsp; "
+                            f"⏱ {m['demandeur_exp_years']} ans d'exp. &nbsp;·&nbsp; "
+                            f"📁 {m['demandeur_diplome'] or 'Diplôme non spécifié'}"),
+                why_html = why_candidate(m, offer_dict),
+                meta_items = [
+                    f"C1 <b>{m['criterion_scores'].get('C1',0):.2f}</b>",
+                    f"C2 <b>{m['criterion_scores'].get('C2',0):.2f}</b>",
+                    f"C3 <b>{m['criterion_scores'].get('C3',0):.2f}</b>",
+                    f"Ancienneté : <b>{anc_str}</b>",
+                    f"C6 <b>{m['criterion_scores'].get('C6',0):.2f}</b>",
+                    f"📈 {m.get('candidate_frequency',0)} hist.",
+                ],
+            )
 
-    # ── Footer note ───────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.caption(
-        "Recommandations générées par le modèle ML (Logistic Regression) entraîné sur "
-        f"{sum(cache.get(s,{}).get('n_samples',0) for s in ['S0','S1','S2','S3']):,} "
-        "placements réels ANEM. Les scores reflètent la compatibilité statistique entre "
-        "votre profil et les offres historiques."
-    )
+        # Comparison table
+        st.markdown("---")
+        st.markdown('<div class="shdr">Comparaison</div>', unsafe_allow_html=True)
+        try:
+            import pandas as pd
+            df = pd.DataFrame({
+                "":         [f"{MEDALS[i]} #{i+1}" for i in range(len(matches))],
+                "Métier":   [m["demandeur_metier"][:32] for m in matches],
+                "Commune":  [m["demandeur_commune"] for m in matches],
+                "TE":       [m["employability_score"] for m in matches],
+                "Classif.": [m["classification"] for m in matches],
+                "C1": [round(m["criterion_scores"]["C1"],2) for m in matches],
+                "C2": [round(m["criterion_scores"]["C2"],2) for m in matches],
+                "C3": [round(m["criterion_scores"]["C3"],2) for m in matches],
+                "C6": [round(m["criterion_scores"]["C6"],2) for m in matches],
+                "MMR":[round(m.get("mmr_score",0),3) for m in matches],
+            }).set_index("")
+
+            def _hl(val):
+                if isinstance(val, float) and val > 1:
+                    h = score_hex(val).lstrip("#")
+                    r,g,b = int(h[0:2],16),int(h[2:4],16),int(h[4:6],16)
+                    return f"color:rgb({r},{g},{b});font-weight:bold"
+                return ""
+
+            st.dataframe(df.style.applymap(_hl, subset=["TE"]), use_container_width=True)
+            st.download_button("⬇️ Télécharger CSV",
+                               df.to_csv().encode("utf-8"),
+                               "recommandations_candidats.csv", "text/csv")
+        except ImportError:
+            for i, m in enumerate(matches):
+                st.write(f"#{i+1}: {m['demandeur_metier']} — {m['employability_score']:.1f}/100")
+
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.caption(
+    f"Modèle ML (Logistic Regression) · {total_samples:,} placements réels ANEM · "
+    f"Diversité MMR (λ={lambda_:.2f}) · Scoring C1–C6 avec correspondance floue (thefuzz)"
+)
